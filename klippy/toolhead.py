@@ -276,6 +276,7 @@ class ToolHead:
             logging.exception(msg)
             raise config.error(msg)
         # Register commands
+        gcode.register_command('GET_MCU_VERSION', self.cmd_GET_MCU_VERSION)
         gcode.register_command('G4', self.cmd_G4)
         gcode.register_command('M400', self.cmd_M400)
         gcode.register_command('SET_VELOCITY_LIMIT',
@@ -664,6 +665,13 @@ class ToolHead:
             accel = min(p, t)
         self.max_accel = accel
         self._calc_junction_deviation()
+    def cmd_GET_MCU_VERSION(self, gcmd):
+        mcu = self.printer.lookup_object("mcu")
+        eboard = self.printer.lookup_object("mcu eboard")
+        eheaterboard = self.printer.lookup_object("mcu eheaterboard")
+        levelboard = self.printer.lookup_object("mcu levelboard")
+        gcmd.respond_info("mcu:%s eboard:%s eheaterboard:%s levelboard:%s" % 
+                        (mcu.MCU_VERSION, eboard.MCU_VERSION, eheaterboard.MCU_VERSION, levelboard.MCU_VERSION))
 
 def add_printer_objects(config):
     config.get_printer().add_object('toolhead', ToolHead(config))

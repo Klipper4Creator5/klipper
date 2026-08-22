@@ -41,11 +41,15 @@ class ProbeCommandHelper:
         self.probe = probe
         self.query_endstop = query_endstop
         self.name = config.get_name()
+        self.mcu_name = self.probe.get_mcu().get_name()
         gcode = self.printer.lookup_object('gcode')
         # QUERY_PROBE command
         self.last_state = False
         gcode.register_command('QUERY_PROBE', self.cmd_QUERY_PROBE,
                                desc=self.cmd_QUERY_PROBE_help)
+        gcode.register_mux_command('RECOVER_PROBE', 'MCU', self.mcu_name,
+                                   self.cmd_RECOVER_PROBE,
+                                   desc=self.cmd_RECOVER_PROBE_help)
         # PROBE command
         self.last_z_result = 0.
         gcode.register_command('PROBE', self.cmd_PROBE,
@@ -67,6 +71,7 @@ class ProbeCommandHelper:
                 'last_query': self.last_state,
                 'last_z_result': self.last_z_result}
     cmd_QUERY_PROBE_help = "Return the status of the z-probe"
+    cmd_RECOVER_PROBE_help = "Request MCU-side probe state recover"
     def cmd_QUERY_PROBE(self, gcmd):
         if self.query_endstop is None:
             raise gcmd.error("Probe does not support QUERY_PROBE")
@@ -75,6 +80,9 @@ class ProbeCommandHelper:
         res = self.query_endstop(print_time)
         self.last_state = res
         gcmd.respond_info("probe: %s" % (["open", "TRIGGERED"][not not res],))
+    def cmd_RECOVER_PROBE(self, gcmd):
+        self.probe.recover_probe_state()
+        gcmd.respond_info("RECOVER_PROBE: requested MCU probe state recover")
     cmd_PROBE_help = "Probe Z-height at current XY position"
     def cmd_PROBE(self, gcmd):
         pos = run_single_probe(self.probe, gcmd)
@@ -547,6 +555,8 @@ class ProbeEndstopWrapper:
     def probing_move(self, pos, speed):
         phoming = self.printer.lookup_object('homing')
         return phoming.probing_move(self, pos, speed)
+    def recover_state(self):
+        self.mcu_endstop.recover_endstop_state()
     def probe_prepare(self, hmove):
         if self.multi == 'OFF' or self.multi == 'FIRST':
             self._lower_probe()
@@ -567,6 +577,8 @@ class PrinterProbe:
                                              self.mcu_probe.query_endstop)
         self.probe_offsets = ProbeOffsetsHelper(config)
         self.probe_session = ProbeSessionHelper(config, self.mcu_probe)
+    def get_mcu(self):
+        return self.mcu_probe.get_mcu()
     def get_probe_params(self, gcmd=None):
         return self.probe_session.get_probe_params(gcmd)
     def get_offsets(self):
@@ -575,6 +587,8 @@ class PrinterProbe:
         return self.cmd_helper.get_status(eventtime)
     def start_probe_session(self, gcmd):
         return self.probe_session.start_probe_session(gcmd)
+    def recover_probe_state(self):
+        self.mcu_probe.recover_state()
 
 def load_config(config):
     return PrinterProbe(config)
