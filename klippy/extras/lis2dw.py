@@ -177,7 +177,7 @@ class LIS2DW:
             # Stream mode
             self.set_reg(REG_LIS2DW_FIFO_CTRL, 0x80)
         # Start bulk reading
-        rest_ticks = self.mcu.seconds_to_clock(4. / self.data_rate)
+        rest_ticks = self.mcu.seconds_to_clock(1. / self.data_rate)
         self.query_lis2dw_cmd.send([self.oid, rest_ticks])
         if self.lis_type == LIS2DW_TYPE:
             self.set_reg(REG_LIS2DW_FIFO_CTRL, 0xC0)
