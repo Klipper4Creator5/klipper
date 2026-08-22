@@ -29,6 +29,8 @@ class RunoutHelper:
         self.min_event_systime = self.reactor.NEVER
         self.filament_present = False
         self.sensor_enabled = True
+        self.last_extruder_pos = None
+        self.last_runout_pos = None
         # Register commands and event handlers
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
         self.gcode.register_mux_command(
@@ -59,7 +61,10 @@ class RunoutHelper:
         except Exception:
             logging.exception("Script running error")
         self.min_event_systime = self.reactor.monotonic() + self.event_delay
-    def note_filament_present(self, is_filament_present):
+    def note_filament_present(self, is_filament_present, extruder_pos=None, runout_pos=None):
+        if extruder_pos is not None and runout_pos is not None:
+            self.last_extruder_pos = extruder_pos
+            self.last_runout_pos = runout_pos
         if is_filament_present == self.filament_present:
             return
         self.filament_present = is_filament_present
@@ -84,14 +89,19 @@ class RunoutHelper:
         elif is_printing and self.runout_gcode is not None:
             # runout detected
             self.min_event_systime = self.reactor.NEVER
+            pos_info = ""
+            if extruder_pos is not None and runout_pos is not None:
+                pos_info = ", Extruder Position: %.2f mm, Runout Position: %.2f mm" % (extruder_pos, runout_pos)
             logging.info(
-                "Filament Sensor %s: runout event detected, Time %.2f" %
-                (self.name, eventtime))
+                "Filament Sensor %s: runout event detected, Time %.2f%s" %
+                (self.name, eventtime, pos_info))
             self.reactor.register_callback(self._runout_event_handler)
     def get_status(self, eventtime):
         return {
             "filament_detected": bool(self.filament_present),
-            "enabled": bool(self.sensor_enabled)}
+            "enabled": bool(self.sensor_enabled),
+            "filament_position": self.last_extruder_pos,
+            "runout_position": self.last_runout_pos}
     cmd_QUERY_FILAMENT_SENSOR_help = "Query the status of the Filament Sensor"
     def cmd_QUERY_FILAMENT_SENSOR(self, gcmd):
         if self.filament_present:
