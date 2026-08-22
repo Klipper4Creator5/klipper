@@ -3,7 +3,7 @@
 # Copyright (C) 2016-2021  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import logging, math
+import logging, math,time
 
 HOMING_START_DELAY = 0.001
 ENDSTOP_SAMPLE_TIME = .000015
@@ -66,11 +66,12 @@ class HomingMove:
         thpos = self.toolhead.get_position()
         return list(kin.calc_position(kin_spos))[:3] + thpos[3:]
     def homing_move(self, movepos, speed, probe_pos=False,
-                    triggered=True, check_triggered=True):
+                    triggered=True, check_triggered=True, safe_z=False):
         # Notify start of homing/probing move
         self.printer.send_event("homing:homing_move_begin", self)
         # Note start location
         self.toolhead.flush_step_generation()
+        time.sleep(0.5)
         kin = self.toolhead.get_kinematics()
         kin_spos = {s.get_name(): s.get_commanded_position()
                     for s in kin.get_steppers()}
@@ -122,7 +123,12 @@ class HomingMove:
             if trig_steps != halt_steps:
                 haltpos = self.calc_toolhead_pos(kin_spos, halt_steps)
         else:
-            haltpos = trigpos = movepos
+            trig_steps = {sp.stepper_name: sp.trig_pos - sp.start_pos
+                          for sp in self.stepper_positions}
+            trigpos = self.calc_toolhead_pos(kin_spos, trig_steps)
+            
+            haltpos = movepos
+            #haltpos = trigpos = movepos
             over_steps = {sp.stepper_name: sp.halt_pos - sp.trig_pos
                           for sp in self.stepper_positions}
             if any(over_steps.values()):
@@ -138,7 +144,8 @@ class HomingMove:
             if error is None:
                 error = str(e)
         if error is not None:
-            raise self.printer.command_error(error)
+            if not safe_z:
+                raise self.printer.command_error(error)
         return trigpos
     def check_no_movement(self):
         if self.printer.get_start_args().get('debuginput') is not None:
@@ -173,6 +180,78 @@ class Homing:
         return thcoord
     def set_homed_position(self, pos):
         self.toolhead.set_position(self._fill_coord(pos))
+    def home_rails_z(self, rails, forcepos, movepos, gcmd):
+        # Notify of upcoming homing operation
+        self.printer.send_event("homing:home_rails_begin", self, rails)
+        # Alter kinematics class to think printer is at forcepos
+        homing_axes = [axis for axis in range(3) if forcepos[axis] is not None]
+        
+        startpos = self._fill_coord(forcepos)
+        homepos = self._fill_coord(movepos)
+        self.toolhead.set_position(startpos, homing_axes=homing_axes)
+        # Perform first home
+        endstops = [es for rail in rails for es in rail.get_endstops()]
+        hi = rails[0].get_homing_info()
+        hmove = HomingMove(self.printer, endstops)
+        hmove.homing_move(homepos, hi.speed)
+        # Perform second home
+        positions = []
+        retries = 0
+        while len(positions) < 3:
+            # Retract
+            startpos = self._fill_coord(forcepos)
+            homepos = self._fill_coord(movepos)
+            axes_d = [hp - sp for hp, sp in zip(homepos, startpos)]
+            move_d = math.sqrt(sum([d*d for d in axes_d[:3]]))
+            retract_r = min(1., hi.retract_dist / move_d)
+            retractpos = [hp - ad * retract_r
+                          for hp, ad in zip(homepos, axes_d)]
+            self.toolhead.move(retractpos, hi.retract_speed)
+            self.toolhead.flush_step_generation()
+            # Home again
+            startpos = [rp - ad * retract_r
+                        for rp, ad in zip(retractpos, axes_d)]
+            self.toolhead.set_position(startpos)
+            hmove = HomingMove(self.printer, endstops)
+            trig_pos = hmove.homing_move(homepos, hi.second_homing_speed)
+            print("############trig_pos:", trig_pos)
+            #logging.info("############trig_pos:%s", trig_pos)
+            gcmd.respond_info("####trig_pos:%s" % trig_pos)
+            positions.append(trig_pos)
+            #print("########positions:", positions)
+            # Check samples tolerance
+            z_positions = [p[2] for p in positions]
+            #print("########z_positions:", z_positions)
+            if max(z_positions)-min(z_positions) > 0.02:
+                if retries >= 3:
+                    gcmd.respond_info("G28 Z samples exceed samples_tolerance[3] homing fail")
+                    raise gcmd.error("G28 Z samples exceed samples_tolerance, homing fail!")
+                gcmd.respond_info("G28 Z samples exceed tolerance. Retrying...")
+                retries += 1
+                positions = []
+            
+            if hmove.check_no_movement() is not None:
+                raise self.printer.command_error(
+                    "Endstop %s still triggered after retract"
+                    % (hmove.check_no_movement(),))
+        # Signal home operation complete
+        self.toolhead.flush_step_generation()
+        self.trigger_mcu_pos = {sp.stepper_name: sp.trig_pos
+                                for sp in hmove.stepper_positions}
+        self.adjust_pos = {}
+        self.printer.send_event("homing:home_rails_end", self, rails)
+        if any(self.adjust_pos.values()):
+            # Apply any homing offsets
+            kin = self.toolhead.get_kinematics()
+            homepos = self.toolhead.get_position()
+            kin_spos = {s.get_name(): (s.get_commanded_position()
+                                       + self.adjust_pos.get(s.get_name(), 0.))
+                        for s in kin.get_steppers()}
+            newpos = kin.calc_position(kin_spos)
+            for axis in homing_axes:
+                homepos[axis] = newpos[axis]
+            self.toolhead.set_position(homepos)
+
     def home_rails(self, rails, forcepos, movepos):
         # Notify of upcoming homing operation
         self.printer.send_event("homing:home_rails_begin", self, rails)
@@ -197,6 +276,7 @@ class Homing:
             retractpos = [hp - ad * retract_r
                           for hp, ad in zip(homepos, axes_d)]
             self.toolhead.move(retractpos, hi.retract_speed)
+            self.toolhead.flush_step_generation()
             # Home again
             startpos = [rp - ad * retract_r
                         for rp, ad in zip(retractpos, axes_d)]
@@ -242,19 +322,21 @@ class PrinterHoming:
                 raise self.printer.command_error(
                     "Homing failed due to printer shutdown")
             raise
-    def probing_move(self, mcu_probe, pos, speed):
+    def probing_move(self, mcu_probe, pos, speed, rase=True, safe_mode=False):
         endstops = [(mcu_probe, "probe")]
         hmove = HomingMove(self.printer, endstops)
         try:
-            epos = hmove.homing_move(pos, speed, probe_pos=True)
+            epos = hmove.homing_move(pos, speed, probe_pos=True, safe_z=safe_mode)
         except self.printer.command_error:
             if self.printer.is_shutdown():
                 raise self.printer.command_error(
                     "Probing failed due to printer shutdown")
             raise
         if hmove.check_no_movement() is not None:
-            raise self.printer.command_error(
-                "Probe triggered prior to movement")
+            if rase == True:
+                raise self.printer.command_error("Probe triggered prior to movement")
+            epos[0] = 9999
+            #raise self.printer.command_error("Probe triggered prior to movement")
         return epos
     def cmd_G28(self, gcmd):
         # Move to origin
@@ -268,7 +350,7 @@ class PrinterHoming:
         homing_state.set_axes(axes)
         kin = self.printer.lookup_object('toolhead').get_kinematics()
         try:
-            kin.home(homing_state)
+            kin.home(homing_state, gcmd)
         except self.printer.command_error:
             if self.printer.is_shutdown():
                 raise self.printer.command_error(
