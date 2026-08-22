@@ -41,6 +41,8 @@ class VirtualSD:
         self.channel_z = 0.0;
         self.channel_e = 0.0;
         self.channel_speed = 0;
+        self.m104 = "M104"
+        self.m109 = "M109"
         self.channel_pause_z = "0.0";
         self.channel_pause_x = "0.0";
         self.channel_pause_y = "0.0";
@@ -49,6 +51,9 @@ class VirtualSD:
         self.channel_pause_is_y = False;
         self.after_channel_g1 = False;
         self.g1_lines = []
+        self.need_check_ex = False
+        self.gcode_ex_used = ['T99', 'T99', 'T99', 'T99', 'T99', 'T99']
+        self.gcode_ex_used_changed = ['T99', 'T99', 'T99', 'T99', 'T99', 'T99']
         # Error handling
         gcode_macro = self.printer.load_object(config, 'gcode_macro')
         self.on_error_gcode = gcode_macro.load_template(
@@ -79,7 +84,16 @@ class VirtualSD:
             desc=self.cmd_SDCARD_SET_PAUSE_STATE_help)    
         self.gcode.register_command(
             "SDCARD_ENABLE_FFM", self.cmd_SDCARD_ENABLE_FFM,
-            desc=self.cmd_SDCARD_ENABLE_FFM_help)   
+            desc=self.cmd_SDCARD_ENABLE_FFM_help)  
+        self.gcode.register_command(
+            "SDCARD_SET_GCODE_EX_USED_BASE", self.cmd_SDCARD_SET_GCODE_EX_USED_BASE,
+            desc=self.cmd_SDCARD_SET_GCODE_EX_USED_BASE_help)
+        self.gcode.register_command(
+            "SDCARD_SET_GCODE_EX_USED_CHANGED", self.cmd_SDCARD_SET_GCODE_EX_USED_CHANGED,
+            desc=self.cmd_SDCARD_SET_GCODE_EX_USED_CHANGED_help)
+        self.gcode.register_command(
+            "SDCARD_SET_NEED_CHECK_EX", self.cmd_SDCARD_SET_NEED_CHECK_EX,
+            desc=self.cmd_SDCARD_SET_NEED_CHECK_EX_help)
     def handle_shutdown(self):
         if self.work_timer is not None:
             self.must_pause_work = True
@@ -215,7 +229,23 @@ class VirtualSD:
         self.channel_e = e
         self.channel_speed = speed
         self.after_channel_g1 = False;
-        logging.info("SDCARD_SET_PAUSE_STATE,x=%f y=%f z=%f e=%f speed=%d",x,y,z,e,speed)
+        #logging.info("SDCARD_SET_PAUSE_STATE,x=%f y=%f z=%f e=%f speed=%d",x,y,z,e,speed)
+    cmd_SDCARD_SET_GCODE_EX_USED_BASE_help = "print gcode file used extruder"
+    def cmd_SDCARD_SET_GCODE_EX_USED_BASE(self, gcmd):
+        index = gcmd.get_int('INDEX')
+        ex = gcmd.get("EXTRUDER")
+        self.gcode_ex_used[index] = ex
+    cmd_SDCARD_SET_GCODE_EX_USED_CHANGED_help = "print gcode file changed extruder"
+    def cmd_SDCARD_SET_GCODE_EX_USED_CHANGED(self, gcmd):
+        index = gcmd.get_int('INDEX')
+        ex = gcmd.get("EXTRUDER")
+        self.gcode_ex_used_changed[index] = ex
+    cmd_SDCARD_SET_NEED_CHECK_EX_help = "enable check extrude when print"
+    def cmd_SDCARD_SET_NEED_CHECK_EX(self, gcmd):
+        enable = gcmd.get_int('CHECK')
+        self.need_check_ex = False
+        if enable == 1:
+            self.need_check_ex = True
     cmd_SDCARD_ENABLE_FFM_help = "enable ffm "
     def cmd_SDCARD_ENABLE_FFM(self, gcmd):
         enable = gcmd.get_int('ENABLE')
@@ -267,7 +297,7 @@ class VirtualSD:
         if self.work_timer is not None:
             raise gcmd.error("SD busy")
         self._reset_file()
-        self.print_channel = 0
+        #self.print_channel = 0
         self.change_filament = False
         self.enable_ffm = False
         filename = gcmd.get_raw_command_parameters().strip()
@@ -280,8 +310,8 @@ class VirtualSD:
         files_by_lower = { fname.lower(): fname for fname, fsize in files }
         fname = filename
         try:
-            if fname not in flist:
-                fname = files_by_lower[fname.lower()]
+            #if fname not in flist:
+                #fname = files_by_lower[fname.lower()]
             fname = os.path.join(self.sdcard_dirname, fname)
             f = io.open(fname, 'r', newline='')
             f.seek(0, os.SEEK_END)
@@ -395,17 +425,17 @@ class VirtualSD:
                     self.channel_pause_is_y = True
                 if self.channel_pause_is_y and self.channel_pause_is_x :
                     self.gcode.run_script("CLEAR_EXTRUDER")
-                    logging.info("After change channel CLEAR_EXTRUDER")
+                    #logging.info("After change channel CLEAR_EXTRUDER")
                     pause_gcode = "G1" + " X" + self.channel_pause_x + " Y" + self.channel_pause_y + " F36000"
-                    logging.info("After change channel first go pause_gcode_xy (%s)",pause_gcode)
+                    #logging.info("After change channel first go pause_gcode_xy (%s)",pause_gcode)
                     self.gcode.run_script(pause_gcode)
                     if self.channel_pause_is_z :
                         pause_gcode = "G1" + " Z" + self.channel_pause_z + " F36000"
-                        logging.info("After change channel first go pause_gcode_z (gcode z) (%s)",pause_gcode)
+                        #logging.info("After change channel first go pause_gcode_z (gcode z) (%s)",pause_gcode)
                         self.gcode.run_script(pause_gcode)
                     else :
                         pause_gcode = "G1" + " Z" + str(self.channel_z) + " F36000"
-                        logging.info("After change channel first go pause_gcode_z (channel_z): (%s)",pause_gcode)
+                        #logging.info("After change channel first go pause_gcode_z (channel_z): (%s)",pause_gcode)
                         self.gcode.run_script(pause_gcode)    
                     self.after_channel_g1 = False
                     self.channel_pause_is_z = False
@@ -414,18 +444,42 @@ class VirtualSD:
                 continue
             #end check after change channel find g1 (go g1 here)
             #check m104/m109 whitch extruder
-            m104 = "M104"
-            m109 = "m109"
-            if ((m104 in line) or (m109 in line)) and ("T" not in line) and (line.startswith(";") == False) :
+            if ((self.m104 in line) or (self.m109 in line)) and ("T" not in line) and (line.startswith(";") == False) :
                 if ';' in line :
                     index = line.index(';')
                     line = line[:index]
                 line = line.strip() + " T" + str(self.print_channel)
             #end check m104/m109 whitch extruder
+            #change extruder when print 3mf , reset M104/M109 control
+            if self.need_check_ex :
+                if ((self.m104 in line) or (self.m109 in line)) and (line.startswith(";") == False) :
+                    #logging.info("changed extruder line: %s",line)
+                    if ';' in line :
+                        index = line.index(';')
+                        line = line[:index]
+                    srT = int(line[line.rfind('T')+1:])
+                    strBase = "T" + str(srT)
+                    try :
+                        iBase = self.gcode_ex_used.index(strBase)
+                    except ValueError :
+                        iBase = -1
+                    if iBase >= 0 :
+                        strChanged = self.gcode_ex_used_changed[iBase]
+                        line = line.replace(strBase,strChanged)
+                        #logging.info("changed extruder after line: %s",line)
             #logging.info("Starting SD card print (line %s)", line)
             if line in VALID_GCODE_T:
                 self.print_channel = int(line[line.rfind('T')+1:])
-                logging.info("print_channel: %d load_channel: %d",self.print_channel,self.load_channel)
+                #logging.info("print_channel: %d load_channel: %d",self.print_channel,self.load_channel)
+                if self.need_check_ex :
+                    try :
+                        index_base = self.gcode_ex_used.index("T" + str(self.print_channel))
+                    except ValueError :
+                        index_base = -1
+                    if index_base >= 0 :
+                        index_changed = self.gcode_ex_used_changed[index_base]
+                        self.print_channel = int(index_changed[index_changed.rfind('T')+1:])
+                        #logging.info("index_base: %d index_changed_ex: %s",index_base,index_changed)
                 if self.print_channel != self.load_channel:
                     self.gcode.run_script("M400")
                     self.change_filament = True
@@ -444,6 +498,7 @@ class VirtualSD:
             #    self.g1_lines.pop(0)
             #    self.g1_lines.append(line)
             try:
+                #logging.info("run_script line: %s",line)
                 self.gcode.run_script(line)
             except self.gcode.error as e:
                 error_message = str(e)
