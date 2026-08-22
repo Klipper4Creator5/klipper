@@ -30,6 +30,12 @@ class QueryADC:
             r = pullup * v / (1.0 - v)
             msg += "\n resistance %.3f (with %.0f pullup)" % (r, pullup)
         gcmd.respond_info(msg)
+    def get_status(self, eventtime):
+        value, timestamp = self.adc["temperature_sensor extruder_servo_value"].get_last_value()
+        return {"value": value}
+    def get_value(self):
+        value, timestamp = self.adc["temperature_sensor extruder_servo_value"].get_last_value()
+        return value
 
 def load_config(config):
     return QueryADC(config)

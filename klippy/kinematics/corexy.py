@@ -60,7 +60,10 @@ class CoreXYKinematics:
             else:
                 forcepos[axis] += 1.5 * (position_max - hi.position_endstop)
             # Perform homing
-            homing_state.home_rails([rail], forcepos, homepos)
+            if axis == 2:
+                homing_state.home_rails_z([rail], forcepos, homepos)
+            else:
+                homing_state.home_rails([rail], forcepos, homepos)
     def _check_endstops(self, move):
         end_pos = move.end_pos
         for i in (0, 1, 2):

@@ -3,6 +3,57 @@
 # Copyright (C) 2019 Florian Heilmann <Florian.Heilmann@gmx.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+import logging
+
+# Endstop wrapper that enables TmcHome specific features
+class SafeStopEndstopWrapper:
+    def __init__(self, config):
+        self.printer = config.get_printer()
+        self.stepper_name = "Z"  #config.get_name().split()[-1]
+
+        #self.position_endstop = config.getfloat('offset')
+
+        # Create an "endstop" object to handle the probe
+        ppins = self.printer.lookup_object('pins')
+        self.mcu_endstop = ppins.setup_pin('endstop', config.get('pin'))
+        self.printer.register_event_handler('klippy:mcu_identify',
+                                            self._handle_mcu_identify)
+        # Wrappers
+        self.get_mcu = self.mcu_endstop.get_mcu
+        self.add_stepper = self.mcu_endstop.add_stepper
+        self.get_steppers = self.mcu_endstop.get_steppers
+        self.home_start = self.mcu_endstop.home_start
+        self.home_wait = self.mcu_endstop.home_wait
+        self.query_endstop = self.mcu_endstop.query_endstop
+        # multi probes state
+        self.multi = 'OFF'
+    def _handle_mcu_identify(self):
+        kin = self.printer.lookup_object('toolhead').get_kinematics()
+        # 获取已注册的步进器名称，防止重复注册
+        registered = {s.get_name() for s in self.mcu_endstop.get_steppers()}
+        for stepper in kin.get_steppers():
+            if stepper.get_name() in registered:
+                continue  # 已注册，跳过
+            if stepper.is_active_axis('z') and self.stepper_name == "Z":
+                self.add_stepper(stepper)
+            elif stepper.is_active_axis('x') and self.stepper_name == "X":
+                self.add_stepper(stepper)
+            elif stepper.is_active_axis('y') and self.stepper_name == "Y":
+                self.add_stepper(stepper)
+    def z_stop_move(self, pos, speed):
+        phoming = self.printer.lookup_object('homing')
+        epos = phoming.probing_move(self, pos, speed, safe_mode=True)
+        # epos[0]=9999 表示移动前 endstop 已触发（Eddy 信号未释放），属于正常安全停止
+        if epos[0] == 9999:
+            logging.warning("safe_z_home: z_stop_move triggered prior to movement"
+                            " (Eddy signal not released), position may be inaccurate")
+        return epos
+    def get_position_endstop(self):
+        # 修复：原来引用未定义的 self.x_endstop，改为从 mcu_endstop 读取
+        if hasattr(self.mcu_endstop, 'get_position_endstop'):
+            return self.mcu_endstop.get_position_endstop()
+        return 0.
+
 
 class SafeZHoming:
     def __init__(self, config):
@@ -19,6 +70,8 @@ class SafeZHoming:
         self.gcode = self.printer.lookup_object('gcode')
         self.prev_G28 = self.gcode.register_command("G28", None)
         self.gcode.register_command("G28", self.cmd_G28)
+
+        self.mcu_probe = SafeStopEndstopWrapper(config)
 
         if config.has_section("homing_override"):
             raise config.error("homing_override and safe_z_homing cannot"
@@ -38,8 +91,9 @@ class SafeZHoming:
                 # Always perform the z_hop if the Z axis is not homed
                 pos[2] = 0
                 toolhead.set_position(pos, homing_axes="z")
-                toolhead.manual_move([None, None, self.z_hop],
-                                     self.z_hop_speed)
+                #toolhead.manual_move([None, None, self.z_hop],self.z_hop_speed)
+                pos[2] = self.z_hop
+                self.mcu_probe.z_stop_move(pos, self.z_hop_speed)
                 toolhead.get_kinematics().clear_homing_state("z")
             elif pos[2] < self.z_hop:
                 # If the Z axis is homed, and below z_hop, lift it to z_hop
