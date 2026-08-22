@@ -12,6 +12,7 @@ class EncoderSensor:
     def __init__(self, config):
         # Read config
         self.printer = config.get_printer()
+        self.name = config.get_name().split()[-1]  # chenhe
         switch_pin = config.get('switch_pin')
         self.extruder_name = config.get('extruder')
         self.detection_length = config.getfloat(
@@ -21,6 +22,7 @@ class EncoderSensor:
         buttons.register_buttons([switch_pin], self.encoder_event)
         # Get printer objects
         self.reactor = self.printer.get_reactor()
+        self.gcode = self.printer.lookup_object('gcode') # chenhe
         self.runout_helper = filament_switch_sensor.RunoutHelper(config)
         self.get_status = self.runout_helper.get_status
         self.extruder = None
@@ -36,6 +38,10 @@ class EncoderSensor:
                 self._handle_not_printing)
         self.printer.register_event_handler('idle_timeout:idle',
                 self._handle_not_printing)
+        self.gcode.register_mux_command(  # chenhe
+            "RESET_FILAMENT_SENSOR", "SENSOR", self.name,
+            self.cmd_RESET_FILAMENT_SENSOR,
+            desc=self.cmd_RESET_FILAMENT_SENSOR_help)        
     def _update_filament_runout_pos(self, eventtime=None):
         if eventtime is None:
             eventtime = self.reactor.monotonic()
@@ -63,8 +69,9 @@ class EncoderSensor:
     def _extruder_pos_update_event(self, eventtime):
         extruder_pos = self._get_extruder_pos(eventtime)
         # Check for filament runout
+        is_present = extruder_pos < self.filament_runout_pos
         self.runout_helper.note_filament_present(eventtime,
-                extruder_pos < self.filament_runout_pos)
+                is_present, extruder_pos, self.filament_runout_pos)
         return eventtime + CHECK_RUNOUT_TIMEOUT
     def encoder_event(self, eventtime, state):
         if self.extruder is not None:
@@ -72,6 +79,13 @@ class EncoderSensor:
             # Check for filament insertion
             # Filament is always assumed to be present on an encoder event
             self.runout_helper.note_filament_present(eventtime, True)
-
+    cmd_RESET_FILAMENT_SENSOR_help = "Reset the filament motion sensor detection length"
+    def cmd_RESET_FILAMENT_SENSOR(self, gcmd): # chenhe
+        eventtime = self.reactor.monotonic()
+        current_pos = self._get_extruder_pos(eventtime)
+        self._update_filament_runout_pos(eventtime)
+        gcmd.respond_info(
+            "Reset Motion Sensor %s: reset , Current pos: %.2f mm , Runout pos: %.2f mm (current + %.2f mm)" % 
+            (self.name, current_pos, self.filament_runout_pos, self.detection_length))
 def load_config_prefix(config):
     return EncoderSensor(config)
