@@ -44,13 +44,14 @@ class KeyboardReader:
         if not data:
             sys.stderr.write("Socket closed\n")
             sys.exit(0)
-        parts = data.split('\x03')
+        parts = data.decode().split('\x03')
         parts[0] = self.socket_data + parts[0]
         self.socket_data = parts.pop()
         for line in parts:
             sys.stdout.write("GOT: %s\n" % (line,))
     def process_kbd(self):
         data = os.read(self.kbd_fd, 4096)
+        data=data.decode()
         parts = data.split('\n')
         parts[0] = self.kbd_data + parts[0]
         self.kbd_data = parts.pop()
@@ -64,8 +65,12 @@ class KeyboardReader:
                 sys.stderr.write("ERROR: Unable to parse line\n")
                 continue
             cm = json.dumps(m, separators=(',', ':'))
+            #cm=cm.encode()
             sys.stdout.write("SEND: %s\n" % (cm,))
-            self.webhook_socket.send("%s\x03" % (cm,))
+            res="\x03"
+            cmd=cm + res
+            #self.webhook_socket.send("%s\x03" % (cmd,))
+            self.webhook_socket.send(cmd.encode())
     def run(self):
         while 1:
             res = self.poll.poll(1000.)

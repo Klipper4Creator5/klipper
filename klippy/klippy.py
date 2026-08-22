@@ -192,6 +192,9 @@ class Printer:
             if run_result == 'firmware_restart':
                 self.send_event("klippy:firmware_restart")
             self.send_event("klippy:disconnect")
+            #os.system("cmd_mcu write_firmware /usr/prog/libmcu-bare.bin")
+            os.system("cd /usr/prog/bin && ./wakeup_level")
+            #os.system("cmd_mcu bootup")
         except:
             logging.exception("Unhandled exception during post run")
         return run_result
@@ -339,7 +342,7 @@ def main():
         logging.warning("No log file specified!"
                         " Severe timing issues may result!")
     gc.disable()
-
+    sys.setrecursionlimit(10000)
     # Start Printer() class
     while 1:
         if bglogger is not None:
