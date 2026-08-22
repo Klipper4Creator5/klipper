@@ -11,7 +11,7 @@ import os, logging, threading
 ######################################################################
 
 KELVIN_TO_CELSIUS = -273.15
-MAX_HEAT_TIME = 5.0
+MAX_HEAT_TIME = 3.0
 AMBIENT_TEMP = 25.
 PID_PARAM_BASE = 255.
 MAX_MAINTHREAD_TIME = 5.0
@@ -181,8 +181,8 @@ class ControlBangBang:
 # Proportional Integral Derivative (PID) control algo
 ######################################################################
 
-PID_SETTLE_DELTA = 1.
-PID_SETTLE_SLOPE = .1
+PID_SETTLE_DELTA = 5.
+PID_SETTLE_SLOPE = 2.9
 
 class ControlPID:
     def __init__(self, heater, config):
@@ -233,6 +233,8 @@ class ControlPID:
 ######################################################################
 # Sensor and heater lookup
 ######################################################################
+MAX_HEATING_EXTRUDERS = 2
+INACTIVE_EXTRUDER_TEMP_DELTA = 5.0
 
 class PrinterHeaters:
     def __init__(self, config):
@@ -243,6 +245,15 @@ class PrinterHeaters:
         self.available_heaters = []
         self.available_sensors = []
         self.available_monitors = []
+
+        # fp add
+        self.active_heating_extruders = []
+        self.pending_extruders = []
+        self.heater_check_timer = None
+        self.reactor = self.printer.get_reactor()
+        self.max_heating_extruders = MAX_HEATING_EXTRUDERS
+        # fp add end
+        
         self.has_started = self.have_load_sensors = False
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
         self.printer.register_event_handler("gcode:request_restart",
@@ -320,6 +331,10 @@ class PrinterHeaters:
     # G-Code M105 temperature reporting
     def _handle_ready(self):
         self.has_started = True
+        if self.heater_check_timer is None:
+            self.heater_check_timer = self.reactor.register_timer(
+                self._check_heater_queue, self.reactor.NOW)
+
     def _get_temp(self, eventtime):
         # Tn:XXX /YYY B:XXX /YYY
         out = []
@@ -349,12 +364,78 @@ class PrinterHeaters:
             print_time = toolhead.get_last_move_time()
             gcode.respond_raw(self._get_temp(eventtime))
             eventtime = reactor.pause(eventtime + 1.)
+    
+    def _check_heater_queue(self, eventtime):
+        # Check active heaters
+        self.active_heating_extruders = [
+            h for h in self.active_heating_extruders
+            if self.heaters[h].last_temp < \
+                (self.heaters[h].target_temp - INACTIVE_EXTRUDER_TEMP_DELTA)
+        ]
+
+        # Start pending heaters if slots available
+        while (self.pending_extruders and
+               len(self.active_heating_extruders) < self.max_heating_extruders):
+            heater_name, temp = self.pending_extruders.pop(0)
+            self.active_heating_extruders.append(heater_name)
+            self.heaters[heater_name].set_temp(temp)
+
+        return eventtime + 1.0
+
     def set_temperature(self, heater, temp, wait=False):
         toolhead = self.printer.lookup_object('toolhead')
         toolhead.register_lookahead_callback((lambda pt: None))
-        heater.set_temp(temp)
-        if wait and temp:
-            self._wait_for_temperature(heater)
+        heater_name = heater.get_name()
+        if not heater_name.startswith('extruder'):
+            heater.set_temp(temp)
+            if wait and temp:
+                self._wait_for_temperature(heater)
+            return
+        
+        if temp > 0:
+            if heater_name in self.active_heating_extruders:
+                # Already heating - just update target temp
+                heater.set_temp(temp)
+                if wait:
+                    self._wait_for_temperature(heater)
+                return
+
+            if len(self.active_heating_extruders) < self.max_heating_extruders:
+                # Start heating immediately
+                self.active_heating_extruders.append(heater_name)
+                heater.set_temp(temp)
+                if wait:
+                    self._wait_for_temperature(heater)
+            else:
+                logging.info("concurrently heating %d extruders, "
+                            "waiting for %s to finish",
+                            len(self.active_heating_extruders),
+                            self.active_heating_extruders[0])
+                # Add to pending queue
+                if wait:
+                    # If waiting, block until heater is active
+                    self.pending_extruders.append((heater_name, temp))
+                    while (heater_name, temp) in self.pending_extruders:
+                        self.reactor.pause(self.reactor.monotonic() + 0.2)
+
+                    while heater_name in self.active_heating_extruders:
+                        self._wait_for_temperature(self.heaters[heater_name])
+                        self.reactor.pause(self.reactor.monotonic() + 0.2)
+                else:
+                    # Non-blocking - just add to queue
+                    self.pending_extruders.append((heater_name, temp))
+        else:
+            # Cooling down
+            if heater_name in self.active_heating_extruders:
+                logging.info("cancel active heater %s", heater_name)
+                self.active_heating_extruders.remove(heater_name)
+            for i in range(len(self.pending_extruders)):
+                if self.pending_extruders[i][0] == heater_name:
+                    logging.info("cancel pending heater %s", heater_name)
+                    del self.pending_extruders[i]
+                    break
+            heater.set_temp(temp)
+
     cmd_TEMPERATURE_WAIT_help = "Wait for a temperature on a sensor"
     def cmd_TEMPERATURE_WAIT(self, gcmd):
         sensor_name = gcmd.get('SENSOR')
