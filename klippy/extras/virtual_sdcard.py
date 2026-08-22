@@ -5,7 +5,9 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import os, sys, logging, io
 
-VALID_GCODE_EXTS = ['gcode', 'g', 'gco']
+VALID_GCODE_EXTS = ['gcode', 'g', 'gco','gx']
+VALID_GCODE_T = ['T0', 'T1', 'T2', 'T3', 'T4', 'T5']
+VALID_M104_T = ['M104', 'M109']
 
 DEFAULT_ERROR_GCODE = """
 {% if 'heaters' in printer %}
@@ -30,6 +32,23 @@ class VirtualSD:
         self.must_pause_work = self.cmd_from_sd = False
         self.next_file_position = 0
         self.work_timer = None
+        self.load_channel = 0
+        self.print_channel = 0
+        self.change_filament = False
+        self.enable_ffm = False
+        self.channel_x = 0.0;
+        self.channel_y = 0.0;
+        self.channel_z = 0.0;
+        self.channel_e = 0.0;
+        self.channel_speed = 0;
+        self.channel_pause_z = "0.0";
+        self.channel_pause_x = "0.0";
+        self.channel_pause_y = "0.0";
+        self.channel_pause_is_z = False;
+        self.channel_pause_is_x = False;
+        self.channel_pause_is_y = False;
+        self.after_channel_g1 = False;
+        self.g1_lines = []
         # Error handling
         gcode_macro = self.printer.load_object(config, 'gcode_macro')
         self.on_error_gcode = gcode_macro.load_template(
@@ -46,6 +65,21 @@ class VirtualSD:
         self.gcode.register_command(
             "SDCARD_PRINT_FILE", self.cmd_SDCARD_PRINT_FILE,
             desc=self.cmd_SDCARD_PRINT_FILE_help)
+        self.gcode.register_command(
+            "GET_PAUSE_LINE_GCODE", self.cmd_GET_PAUSE_LINE_GCODE,
+            desc=self.cmd_GET_PAUSE_LINE_GCODE_help)
+        self.gcode.register_command(
+            "SDCARD_CLEAR_REFUELLING", self.cmd_SDCARD_CLEAR_REFUELLING,
+            desc=self.cmd_SDCARD_CLEAR_REFUELLING_help)
+        self.gcode.register_command(
+            "SDCARD_SET_CHANNEL", self.cmd_SDCARD_SET_CHANNEL,
+            desc=self.cmd_SDCARD_SET_CHANNEL_help)
+        self.gcode.register_command(
+            "SDCARD_SET_PAUSE_STATE", self.cmd_SDCARD_SET_PAUSE_STATE,
+            desc=self.cmd_SDCARD_SET_PAUSE_STATE_help)    
+        self.gcode.register_command(
+            "SDCARD_ENABLE_FFM", self.cmd_SDCARD_ENABLE_FFM,
+            desc=self.cmd_SDCARD_ENABLE_FFM_help)   
     def handle_shutdown(self):
         if self.work_timer is not None:
             self.must_pause_work = True
@@ -96,6 +130,9 @@ class VirtualSD:
             'is_active': self.is_active(),
             'file_position': self.file_position,
             'file_size': self.file_size,
+            'channel': self.print_channel,
+            'refuelling': self.change_filament,
+            'after_channel_g1': self.after_channel_g1,
         }
     def file_path(self):
         if self.current_file:
@@ -117,6 +154,7 @@ class VirtualSD:
         if self.work_timer is not None:
             raise self.gcode.error("SD busy")
         self.must_pause_work = False
+        self.g1_lines = []
         self.work_timer = self.reactor.register_timer(
             self.work_handler, self.reactor.NOW)
     def do_cancel(self):
@@ -124,6 +162,7 @@ class VirtualSD:
             self.do_pause()
             self.current_file.close()
             self.current_file = None
+            self.change_filament = False
             self.print_stats.note_cancel()
         self.file_position = self.file_size = 0
     # G-Code commands
@@ -155,6 +194,64 @@ class VirtualSD:
             filename = filename[1:]
         self._load_file(gcmd, filename, check_subdirs=True)
         self.do_resume()
+    cmd_SDCARD_CLEAR_REFUELLING_help = "get printing pause line gcode "
+    def cmd_SDCARD_CLEAR_REFUELLING(self, gcmd):
+        self.change_filament = False
+    cmd_SDCARD_SET_CHANNEL_help = "set load channel "
+    def cmd_SDCARD_SET_CHANNEL(self, gcmd):
+        channel = gcmd.get_int('CHANNEL')
+        self.load_channel = channel
+        self.print_channel = channel
+    cmd_SDCARD_SET_PAUSE_STATE_help = "set SDCARD_SET_PAUSE_STATE "
+    def cmd_SDCARD_SET_PAUSE_STATE(self, gcmd):
+        x = gcmd.get_float('X')
+        y = gcmd.get_float('Y')
+        z = gcmd.get_float('Z')
+        e = gcmd.get_float('E')
+        speed = gcmd.get_int('SPEED')
+        self.channel_x = x
+        self.channel_y = y
+        self.channel_z = z
+        self.channel_e = e
+        self.channel_speed = speed
+        self.after_channel_g1 = False;
+        logging.info("SDCARD_SET_PAUSE_STATE,x=%f y=%f z=%f e=%f speed=%d",x,y,z,e,speed)
+    cmd_SDCARD_ENABLE_FFM_help = "enable ffm "
+    def cmd_SDCARD_ENABLE_FFM(self, gcmd):
+        enable = gcmd.get_int('ENABLE')
+        self.enable_ffm = False
+        if enable == 1:
+            self.enable_ffm = True
+    cmd_GET_PAUSE_LINE_GCODE_help = "get printing pause line gcode "
+    def cmd_GET_PAUSE_LINE_GCODE(self, gcmd):
+        count = len(self.g1_lines)
+        if count > 19:
+            gcmd.respond_info(";%s "
+                    ";%s"
+                    ";%s"
+                    ";%s"
+                    ";%s"
+                    ";%s"
+                    ";%s"
+                    ";%s"
+                    ";%s"
+                    ";%s"
+                    ";%s"
+                    ";%s"
+                    ";%s"
+                    ";%s"
+                    ";%s"
+                    ";%s"
+                    ";%s"
+                    ";%s"
+                    ";%s"
+                    ";%s"
+                    % (self.g1_lines[0],self.g1_lines[1], self.g1_lines[2],self.g1_lines[3],self.g1_lines[4],
+                        self.g1_lines[5],self.g1_lines[6],self.g1_lines[7],self.g1_lines[8],self.g1_lines[9],
+                        self.g1_lines[10],self.g1_lines[11],self.g1_lines[12],self.g1_lines[13],self.g1_lines[14],
+                        self.g1_lines[15],self.g1_lines[16],self.g1_lines[17],self.g1_lines[18],self.g1_lines[19]))
+        else:
+            gcmd.respond_info("lines null") 
     def cmd_M20(self, gcmd):
         # List SD card
         files = self.get_file_list()
@@ -170,6 +267,9 @@ class VirtualSD:
         if self.work_timer is not None:
             raise gcmd.error("SD busy")
         self._reset_file()
+        self.print_channel = 0
+        self.change_filament = False
+        self.enable_ffm = False
         filename = gcmd.get_raw_command_parameters().strip()
         if filename.startswith('/'):
             filename = filename[1:]
@@ -221,6 +321,13 @@ class VirtualSD:
         self.next_file_position = pos
     def is_cmd_from_sd(self):
         return self.cmd_from_sd
+    def extract_between_chars(self,src, char1, char2):
+        try:
+            start = src.index(char1) + 1
+            end = src.index(char2, start)
+            return src[start:end]
+        except ValueError:
+            return '0'
     # Background work timer
     def work_handler(self, eventtime):
         logging.info("Starting SD card print (position %d)", self.file_position)
@@ -269,6 +376,73 @@ class VirtualSD:
             else:
                 next_file_position = self.file_position + len(line) + 1
             self.next_file_position = next_file_position
+            #check after change channel find g1 (go g1 here)
+            if (self.after_channel_g1) and (('G1' in line) or ('G0' in line)) and (line.startswith(";") == False) :
+                if ';' in line :
+                    index = line.index(';')
+                    line = line[:index]
+                line = line.strip()
+                line = line + " "
+                logging.info("Before change channel first go G1 (%s)",line)
+                if 'Z' in line :
+                    self.channel_pause_z = self.extract_between_chars(line,'Z',' ')
+                    self.channel_pause_is_z = True
+                if 'X' in line :
+                    self.channel_pause_x = self.extract_between_chars(line,'X',' ')
+                    self.channel_pause_is_x = True
+                if 'Y' in line :
+                    self.channel_pause_y = self.extract_between_chars(line,'Y',' ')
+                    self.channel_pause_is_y = True
+                if self.channel_pause_is_y and self.channel_pause_is_x :
+                    self.gcode.run_script("CLEAR_EXTRUDER")
+                    logging.info("After change channel CLEAR_EXTRUDER")
+                    pause_gcode = "G1" + " X" + self.channel_pause_x + " Y" + self.channel_pause_y + " F36000"
+                    logging.info("After change channel first go pause_gcode_xy (%s)",pause_gcode)
+                    self.gcode.run_script(pause_gcode)
+                    if self.channel_pause_is_z :
+                        pause_gcode = "G1" + " Z" + self.channel_pause_z + " F36000"
+                        logging.info("After change channel first go pause_gcode_z (gcode z) (%s)",pause_gcode)
+                        self.gcode.run_script(pause_gcode)
+                    else :
+                        pause_gcode = "G1" + " Z" + str(self.channel_z) + " F36000"
+                        logging.info("After change channel first go pause_gcode_z (channel_z): (%s)",pause_gcode)
+                        self.gcode.run_script(pause_gcode)    
+                    self.after_channel_g1 = False
+                    self.channel_pause_is_z = False
+                    self.channel_pause_is_y = False
+                    self.channel_pause_is_x = False
+                continue
+            #end check after change channel find g1 (go g1 here)
+            #check m104/m109 whitch extruder
+            m104 = "M104"
+            m109 = "m109"
+            if ((m104 in line) or (m109 in line)) and ("T" not in line) and (line.startswith(";") == False) :
+                if ';' in line :
+                    index = line.index(';')
+                    line = line[:index]
+                line = line.strip() + " T" + str(self.print_channel)
+            #end check m104/m109 whitch extruder
+            #logging.info("Starting SD card print (line %s)", line)
+            if line in VALID_GCODE_T:
+                self.print_channel = int(line[line.rfind('T')+1:])
+                logging.info("print_channel: %d load_channel: %d",self.print_channel,self.load_channel)
+                if self.print_channel != self.load_channel:
+                    self.gcode.run_script("M400")
+                    self.change_filament = True
+                    while True:
+                        if not self.change_filament:
+                           break 
+                        self.reactor.pause(self.reactor.monotonic() + 0.05)
+                    self.after_channel_g1 = True
+                self.load_channel = self.print_channel
+                self.change_filament = False
+                continue         
+            #count = len(self.g1_lines)
+            #if count < 20:
+            #    self.g1_lines.append(line)
+            #else:
+            #    self.g1_lines.pop(0)
+            #    self.g1_lines.append(line)
             try:
                 self.gcode.run_script(line)
             except self.gcode.error as e:
