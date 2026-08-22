@@ -46,7 +46,7 @@ class CoreXYKinematics:
     def note_z_not_homed(self):
         # Helper for Safe Z Home
         self.limits[2] = (1.0, -1.0)
-    def home(self, homing_state):
+    def home(self, homing_state, gcmd):
         # Each axis is homed independently and in order
         for axis in homing_state.get_axes():
             rail = self.rails[axis]
@@ -61,7 +61,10 @@ class CoreXYKinematics:
             else:
                 forcepos[axis] += 1.5 * (position_max - hi.position_endstop)
             # Perform homing
-            homing_state.home_rails([rail], forcepos, homepos)
+            if axis == 2:
+                homing_state.home_rails_z([rail], forcepos, homepos)
+            else:
+                homing_state.home_rails([rail], forcepos, homepos)
     def _motor_off(self, print_time):
         self.limits = [(1.0, -1.0)] * 3
     def _check_endstops(self, move):

@@ -13,6 +13,11 @@ consider reducing the Z axis minimum position so the probe
 can travel further (the Z minimum position can be negative).
 """
 
+PROBE_ISSUE_SETTLE_TIME = 0.20
+PROBE_MAX_SETTLE_TIME = 2.00
+PROBE_RECOVER_TIMEOUT = 1.00
+PROBE_RECOVER_LIFT_Z = 0.50
+
 # Calculate the average Z from a set of positions
 def calc_probe_z_average(positions, method='average'):
     if method != 'median':
@@ -241,8 +246,8 @@ class ProbeSessionHelper:
     def __init__(self, config, mcu_probe):
         self.printer = config.get_printer()
         self.mcu_probe = mcu_probe
-        gcode = self.printer.lookup_object('gcode')
-        self.dummy_gcode_cmd = gcode.create_gcode_command("", "", {})
+        self.gcode = self.printer.lookup_object('gcode')
+        self.dummy_gcode_cmd = self.gcode.create_gcode_command("", "", {})
         # Infer Z position to move to during a probe
         if config.has_section('stepper_z'):
             zconfig = config.getsection('stepper_z')
@@ -315,6 +320,17 @@ class ProbeSessionHelper:
                 'samples_tolerance': samples_tolerance,
                 'samples_tolerance_retries': samples_retries,
                 'samples_result': samples_result}
+    def query_probe(self):
+        if self.mcu_probe is None:
+            raise self.printer.command_error("Probe does not support query_probe")
+        toolhead = self.printer.lookup_object('toolhead')
+        print_time = toolhead.get_last_move_time()
+        res = self.mcu_probe.query_endstop(print_time)
+        if res:
+            status = "TRIGGERED"
+        else:
+            status = "open"
+        return status
     def _probe(self, speed):
         toolhead = self.printer.lookup_object('toolhead')
         curtime = self.printer.get_reactor().monotonic()
@@ -323,7 +339,22 @@ class ProbeSessionHelper:
         pos = toolhead.get_position()
         pos[2] = self.z_position
         try:
+            reactor = self.printer.get_reactor()
+            for i in range(6): 
+                pin_state = self.query_probe()
+                logging.warning("[%d]_probe:[%s]",i, pin_state)
+                if pin_state == "TRIGGERED":
+                    self.gcode.run_script_from_command("GET_BASIC_PARAM_EBOARD")
+                    reactor.pause(reactor.monotonic() + 0.500)
+                    if i == 5:
+                        error = '{"coded": "0088-0000-0000-0001", "msg":"Probe triggered prior to movement"}'
+                        raise self.printer.command_error(error)
+                    continue
+                else:
+                    break
             epos = self.mcu_probe.probing_move(pos, speed)
+            if epos[0] == 9999:
+                return epos[0]
         except self.printer.command_error as e:
             reason = str(e)
             if "Timeout during endstop homing" in reason:
@@ -336,6 +367,7 @@ class ProbeSessionHelper:
         gcode.respond_info("probe at %.3f,%.3f is z=%.6f"
                            % (epos[0], epos[1], epos[2]))
         return epos[:3]
+    
     def run_probe(self, gcmd):
         if not self.multi_probe_pending:
             self._probe_state_error()
@@ -348,6 +380,8 @@ class ProbeSessionHelper:
         while len(positions) < sample_count:
             # Probe position
             pos = self._probe(params['probe_speed'])
+            if pos == 9999:
+                continue
             positions.append(pos)
             # Check samples tolerance
             z_positions = [p[2] for p in positions]
@@ -554,7 +588,7 @@ class ProbeEndstopWrapper:
         self.multi = 'OFF'
     def probing_move(self, pos, speed):
         phoming = self.printer.lookup_object('homing')
-        return phoming.probing_move(self, pos, speed)
+        return phoming.probing_move(self, pos, speed, rase=False)
     def recover_state(self):
         self.mcu_endstop.recover_endstop_state()
     def probe_prepare(self, hmove):

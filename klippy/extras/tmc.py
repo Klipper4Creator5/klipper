@@ -158,7 +158,7 @@ class TMCErrorCheck:
                     break
                 # CS_ACTUAL field of zero - indicates a driver reset
             count += 1
-            if count >= 3:
+            if count >= 30:
                 fmt = self.fields.pretty_format(reg_name, val)
                 raise self.printer.command_error("TMC '%s' reports error: %s"
                                                  % (self.stepper_name, fmt))

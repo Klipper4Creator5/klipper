@@ -3,8 +3,9 @@
 # Copyright (C) 2019-2021  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import stepper, chelper
+import stepper, chelper, logging, os
 from . import force_move
+from . import homing
 
 class ManualStepper:
     def __init__(self, config):
@@ -96,8 +97,13 @@ class ManualStepper:
         homing_move = gcmd.get_int('STOP_ON_ENDSTOP', 0)
         if homing_move:
             movepos = gcmd.get_float('MOVE')
-            self.do_homing_move(movepos, speed, accel,
+            try:
+                self.do_homing_move(movepos, speed, accel,
                                 homing_move > 0, abs(homing_move) == 1)
+                gcmd.respond_info("manual_stepper gear_stepper: endstop triggered")
+            except:
+                gcmd.respond_info("manual_stepper gear_stepper: endstop not triggered")
+                raise
         elif gcmd.get_float('MOVE', None) is not None:
             movepos = gcmd.get_float('MOVE')
             sync = gcmd.get_int('SYNC', 1)
