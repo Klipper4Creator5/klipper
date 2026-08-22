@@ -11,7 +11,7 @@ import cffi
 # c_helper.so compiling
 ######################################################################
 
-GCC_CMD = "gcc"
+GCC_CMD = "mips-linux-gnu-gcc"
 COMPILE_ARGS = ("-Wall -g -O2 -shared -fPIC"
                 " -flto -fwhole-program -fno-use-linker-plugin"
                 " -o %s %s")
@@ -300,7 +300,7 @@ def get_ffi():
 # hub-ctrl hub power controller
 ######################################################################
 
-HC_COMPILE_CMD = "gcc -Wall -g -O2 -o %s %s -lusb"
+HC_COMPILE_CMD = "mips-linux-gnu-gcc -Wall -g -O2 -o %s %s -lusb"
 HC_SOURCE_FILES = ['hub-ctrl.c']
 HC_SOURCE_DIR = '../../lib/hub-ctrl'
 HC_TARGET = "hub-ctrl"
