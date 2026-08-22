@@ -181,10 +181,12 @@ class MCU_trsync:
                 self._trigger_completion = None
                 reason = params['trigger_reason']
                 is_failure = (reason >= self.REASON_COMMS_TIMEOUT)
+                # logging.warning("[fp_handle_trsync_state],complete[%s]", params)
                 self._reactor.async_complete(tc, is_failure)
         elif self._home_end_clock is not None:
             clock = self._mcu.clock32_to_clock64(params['clock'])
             if clock >= self._home_end_clock:
+                # logging.warning("[fp_handle_trsync_state],clock past[%d:%d][%s]", clock, self._home_end_clock, params)
                 self._home_end_clock = None
                 self._trsync_trigger_cmd.send([self._oid,
                                                self.REASON_PAST_END_TIME])
@@ -223,8 +225,8 @@ class MCU_trsync:
             s.note_homing_end()
         return params['trigger_reason']
 
-TRSYNC_TIMEOUT = 0.025
-TRSYNC_SINGLE_MCU_TIMEOUT = 0.250
+TRSYNC_TIMEOUT = 0.1
+TRSYNC_SINGLE_MCU_TIMEOUT = 0.25
 
 class TriggerDispatch:
     def __init__(self, mcu):
@@ -291,7 +293,7 @@ class MCU_endstop:
         self._pullup = pin_params['pullup']
         self._invert = pin_params['invert']
         self._oid = self._mcu.create_oid()
-        self._home_cmd = self._query_cmd = None
+        self._home_cmd = self._query_cmd = self._recover_cmd = None
         self._mcu.register_config_callback(self._build_config)
         self._rest_ticks = 0
         self._dispatch = TriggerDispatch(mcu)
@@ -319,6 +321,11 @@ class MCU_endstop:
             "endstop_query_state oid=%c",
             "endstop_state oid=%c homing=%c next_clock=%u pin_value=%c",
             oid=self._oid, cq=cmd_queue)
+        try:
+            self._recover_cmd = self._mcu.lookup_command(
+                "endstop_recover_state oid=%c", cq=cmd_queue)
+        except Exception:
+            self._recover_cmd = None
     def home_start(self, print_time, sample_time, sample_count, rest_time,
                    triggered=True):
         clock = self._mcu.print_time_to_clock(print_time)
@@ -336,9 +343,11 @@ class MCU_endstop:
         self._home_cmd.send([self._oid, 0, 0, 0, 0, 0, 0, 0])
         res = self._dispatch.stop()
         if res >= MCU_trsync.REASON_COMMS_TIMEOUT:
+            # logging.warning("home_wait_1,res=%d", res)
             cmderr = self._mcu.get_printer().command_error
             raise cmderr("Communication timeout during homing")
         if res != MCU_trsync.REASON_ENDSTOP_HIT:
+            # logging.warning("home_wait_2,res=%d", res)
             return 0.
         if self._mcu.is_fileoutput():
             return home_end_time
@@ -351,6 +360,10 @@ class MCU_endstop:
             return 0
         params = self._query_cmd.send([self._oid], minclock=clock)
         return params['pin_value'] ^ self._invert
+    def recover_endstop_state(self):
+        if self._mcu.is_fileoutput() or self._recover_cmd is None:
+            return
+        self._recover_cmd.send([self._oid])
 
 class MCU_digital_out:
     def __init__(self, mcu, pin_params):
@@ -600,6 +613,7 @@ class MCU:
         self._steppersync = None
         self._flush_callbacks = []
         # Stats
+        self.MCU_VERSION = ""
         self._get_status_info = {}
         self._stats_sumsq_base = 0.
         self._mcu_tick_avg = 0.
@@ -625,6 +639,13 @@ class MCU:
         diff = count*tick_sumsq - tick_sum**2
         self._mcu_tick_stddev = c * math.sqrt(max(0., diff))
         self._mcu_tick_awake = tick_sum / self._mcu_freq
+    def alarm_update(self, msg):
+        if 'ADC out of range' in msg:
+            pheaters = self._printer.lookup_object('heaters')
+            gcode = self._printer.lookup_object('gcode')
+            for name, heater in pheaters.heaters.items():
+                if heater.last_temp > heater.max_temp-10 or heater.last_temp < heater.min_temp:        
+                    gcode.respond_info("!! ADC out of range : " + name)
     def _handle_shutdown(self, params):
         if self._is_shutdown:
             return
@@ -633,6 +654,7 @@ class MCU:
         if clock is not None:
             self._shutdown_clock = self.clock32_to_clock64(clock)
         self._shutdown_msg = msg = params['static_string_id']
+        self.alarm_update(msg)
         event_type = params['#name']
         self._printer.invoke_async_shutdown(
             "MCU shutdown", {"reason": msg, "mcu": self._name,
@@ -715,10 +737,18 @@ class MCU:
                     "Pin '%s' is not a valid pin name on mcu '%s'"
                     % (enum_value, self._name))
             raise
+    def _get_mcu_version(self):
+        get_mcu_version = self.lookup_query_command(
+            "get_mcu_version",
+            "mcu_version year=%u date=%u version=%u")
+        params = get_mcu_version.send()
+        self.MCU_VERSION = "V%d%04d%d" %(params["year"], params["date"], params["version"])
+           
     def _send_get_config(self):
         get_config_cmd = self.lookup_query_command(
             "get_config",
             "config is_config=%c crc=%u is_shutdown=%c move_count=%hu")
+        self._get_mcu_version()
         if self.is_fileoutput():
             return { 'is_config': 0, 'move_count': 500, 'crc': 0 }
         config_params = get_config_cmd.send()
