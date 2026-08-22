@@ -4,7 +4,9 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging
-
+MUTE_MODE_VALUE = 50
+MUTE_MODE_ENABLE  = 0xFFFF
+MUTE_MODE_DISABLE = 0xEEEE
 class GCodeMove:
     def __init__(self, config):
         self.printer = printer = config.get_printer()
@@ -45,6 +47,9 @@ class GCodeMove:
         self.speed = 25.
         self.speed_factor = 1. / 60.
         self.extrude_factor = 1.
+        # mute mode
+        self.user_value = 100
+        self.mute_mode = False
         # G-Code state
         self.saved_states = {}
         self.move_transform = self.move_with_transform = None
