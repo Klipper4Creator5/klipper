@@ -74,7 +74,7 @@ class HomingMove:
         thpos = self.toolhead.get_position()
         return list(kin.calc_position(kin_spos))[:3] + thpos[3:]
     def homing_move(self, movepos, speed, probe_pos=False,
-                    triggered=True, check_triggered=True):
+                    triggered=True, check_triggered=True, safe_z=False):
         # Notify start of homing/probing move
         self.printer.send_event("homing:homing_move_begin", self)
         # Note start location
