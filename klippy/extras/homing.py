@@ -509,13 +509,13 @@ class PrinterHoming:
                 raise self.printer.command_error(
                     "Homing failed due to printer shutdown")
             raise
-    def probing_move(self, mcu_probe, pos, speed):
+    def probing_move(self, mcu_probe, pos, speed, rase=True, safe_mode=False):
         endstops = [(mcu_probe, "probe")]
         hmove = HomingMove(self.printer, endstops)
         default_error_epos = [9999, 0, 0]
         try:
-              epos = hmove.homing_move(pos, speed, probe_pos=True,
-                                         safe_z=safe_mode)
+              epos = hmove.homing_move_small(pos, speed, probe_pos=True,
+                                             safe_z=safe_mode)
         except self.printer.command_error as e:
             if self.printer.is_shutdown():
                 error = '{"coded": "0003-0528-0000-0008", "msg":"%s"}' % ("Probing failed due to printer shutdown")
